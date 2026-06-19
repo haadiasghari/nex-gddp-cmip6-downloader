@@ -1,32 +1,39 @@
-<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/9646fb6d-1baf-4835-86dd-5ec980211d5c" /># NEX-GDDP-CMIP6 Downloader
+# NEX-GDDP-CMIP6 Downloader
 
 A professional GUI tool for downloading climate projection data from NASA's NEX-GDDP-CMIP6 dataset.
 
 ![Python](https://img.shields.io/badge/Python-3.7%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Platform](https://img.shields.io/badge/Platform-Windows%20%28EXE%29-blue)
+![Platform](https://img.shields.io/badge/Platform-Windows-blue)
+![Distribution](https://img.shields.io/badge/Distribution-EXE%20%7C%20Python-orange)
 
 ---
 
 ## 📌 Overview
 
-The **NEX-GDDP-CMIP6 Downloader** simplifies the process of accessing and downloading high-resolution climate data from NASA servers through a user-friendly graphical interface.
+**NEX-GDDP-CMIP6 Downloader** is a Windows desktop application that simplifies downloading high-resolution climate projection data from NASA NEX-GDDP-CMIP6 servers through a user-friendly graphical interface.
 
-The dataset provides **0.25-degree resolution** daily climate variables, covering:
-- Historical periods
-- Future projections under multiple emission scenarios (SSP1-2.6, SSP2-4.5, SSP3-7.0, SSP5-8.5)
+The dataset provides **0.25-degree resolution daily climate variables**, including:
+
+- Historical climate data
+- Future projections under multiple emission scenarios:
+  - SSP1-2.6
+  - SSP2-4.5
+  - SSP3-7.0
+  - SSP5-8.5
 
 ---
 
 ## ✨ Features
 
 - 🖥️ **5-step guided workflow** for easy data selection
-- ⚡ **Multi-threaded & segmented downloads** for maximum speed
+- ⚡ **Multi-threaded & segmented downloads**
 - ⏸️ **Pause / Resume** support
 - 🔄 **Auto-retry** on connection failures
-- 📊 **Real-time speed monitoring** and ETA calculation
+- 📊 **Real-time speed monitoring and ETA calculation**
 - 🔍 **Search & filter** for models, scenarios, ensembles, and parameters
-- 📁 **Organized output** — files saved in structured folders by model/scenario/ensemble/parameter
+- 📁 **Organized output** — files saved in structured folders
+- 💾 **Optimized large file downloading**
 
 ---
 
@@ -34,32 +41,48 @@ The dataset provides **0.25-degree resolution** daily climate variables, coverin
 
 <img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/e2a70ddc-f1d8-4185-8436-d066430c59e2" />
 
+---
+
+# 🚀 Getting Started
+
+## Option 1 — Windows Executable (Recommended)
+
+No Python installation is required.
+
+1. Open the **Releases** section.
+2. Download the latest version:
+
+```
+NEX-GDDP-CMIP6-Downloader.exe
+```
+
+3. Run the application.
 
 ---
 
-## 🚀 Getting Started
+## Option 2 — Run from Python Source
 
-### Prerequisites
+### Requirements
 
+- Windows 10 / 11
 - Python 3.7 or higher
 - pip
 
 ### Installation
 
-1. Clone the repository:
+Clone the repository:
 
 ```bash
 git clone https://github.com/haadiasghari/nex-gddp-cmip6-downloader.git
+
 cd nex-gddp-cmip6-downloader
 ```
 
-2. Install required packages:
+Install dependencies:
 
 ```bash
 pip install requests
 ```
-
-> `tkinter` is included with standard Python installations. No extra install needed.
 
 ### Run the Application
 
@@ -71,15 +94,15 @@ python downloader.py
 
 ## 🗂️ How to Use
 
-Follow the 5-step workflow in the application:
+Follow the workflow inside the application:
 
 | Step | Action |
 |------|--------|
-| 1️⃣ Select Model | Choose a CMIP6 climate model (e.g. ACCESS-CM2) |
-| 2️⃣ Select Scenario | Choose an emission scenario (e.g. SSP2-4.5) |
-| 3️⃣ Select Ensembles | Choose one or more model realizations (e.g. r1i1p1f1) |
-| 4️⃣ Select Parameters | Choose climate variables (e.g. tasmax, tasmin, pr) |
-| 5️⃣ Configure & Download | Set year range, output folder, and start downloading |
+| 1️⃣ | Select a CMIP6 climate model |
+| 2️⃣ | Select an emission scenario |
+| 3️⃣ | Select model ensembles |
+| 4️⃣ | Select climate variables |
+| 5️⃣ | Configure download settings and start |
 
 ---
 
@@ -87,7 +110,7 @@ Follow the 5-step workflow in the application:
 
 Downloaded files are organized automatically:
 
-```
+```text
 cmip6_downloads/
 └── ACCESS-CM2/
     └── ssp245/
@@ -106,9 +129,9 @@ cmip6_downloads/
 |--------|---------|-------------|
 | Output Directory | `./cmip6_downloads` | Where files are saved |
 | Year Range | 1950 – 2100 | Filter files by year |
-| Version Filter | `_v2.0.nc` | Filter files by version string |
+| Version Filter | `_v2.0.nc` | Filter files by version |
 | Download Workers | 4 | Parallel download threads |
-| Segments per File | 8 | Segments for multi-part download |
+| Segments per File | 8 | Multi-part download segments |
 
 ---
 
@@ -116,41 +139,54 @@ cmip6_downloads/
 
 | Package | Purpose |
 |---------|---------|
-| `tkinter` | GUI framework (built-in) |
+| `tkinter` | GUI framework |
 | `requests` | HTTP downloads |
 
 ---
 
 ## 🌐 Data Source
 
-- **Dataset:** [NASA NEX-GDDP-CMIP6](https://www.nasa.gov/nex)
-- **Catalog:** NASA NCCS THREDDS Server
-- **Format:** NetCDF (.nc)
+**Dataset:** NASA NEX-GDDP-CMIP6
+
+**Source:**  
+https://www.nasa.gov/nex
+
+**Format:**
+
+```
+NetCDF (.nc)
+```
 
 ---
 
 ## 👤 Author
 
 **Hadi Asghari**
-- 📧 Email: hadi.asghari@outlook.com
-- 🐙 GitHub: [github.com/haadiasghari](https://github.com/haadiasghari)
+
+GitHub:  
+https://github.com/haadiasghari
+
+Email:  
+hadi.asghari@outlook.com
 
 ---
 
 ## 📄 License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
+
+See:
+
+```
+LICENSE
+```
 
 ---
 
 ## 🤝 Contributing
 
-Contributions, issues, and feature requests are welcome!
+Contributions, issues, and feature requests are welcome.
+
 Feel free to open an issue or submit a pull request.
 
 ---
-
-## 📝 Changelog
-
-### v1.0
-- Initial release with basic download functionality
