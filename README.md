@@ -159,6 +159,26 @@ NetCDF (.nc)
 
 ---
 
+## ☕ Support the Project
+
+If this project helped you in your research, studies, or data analysis, consider supporting its continued development.
+
+Your support helps maintain the project, improve features, and keep it freely available for everyone.
+
+### 💳 Donate (IRR)
+
+[![Donate via Reymit](https://img.shields.io/badge/Donate-Reymit-blue)](https://reymit.ir/hadi_asghari)
+
+### ₿ Bitcoin
+
+```
+bc1q79zvr4a0k6qfzxv8hyc82mjqqfs5cvcspalqxp
+```
+
+Thank you for supporting open-source software ❤️
+
+---
+
 ## 👤 Author
 
 **Hadi Asghari**
