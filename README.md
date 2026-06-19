@@ -1,5 +1,9 @@
 # NEX-GDDP-CMIP6 Downloader
 
+[🇺🇸 English](README.md) | [🇮🇷 فارسی](README.fa.md)
+
+---
+
 A professional GUI tool for downloading climate projection data from NASA's NEX-GDDP-CMIP6 dataset.
 
 ![Python](https://img.shields.io/badge/Python-3.7%2B-blue)
