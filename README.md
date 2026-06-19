@@ -1,4 +1,4 @@
-# NEX-GDDP-CMIP6 Downloader
+<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/9646fb6d-1baf-4835-86dd-5ec980211d5c" /># NEX-GDDP-CMIP6 Downloader
 
 A professional GUI tool for downloading climate projection data from NASA's NEX-GDDP-CMIP6 dataset.
 
@@ -32,7 +32,8 @@ The dataset provides **0.25-degree resolution** daily climate variables, coverin
 
 ## 🖼️ Screenshot
 
-> *(Add a screenshot of the application here)*
+<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/e2a70ddc-f1d8-4185-8436-d066430c59e2" />
+
 
 ---
 
