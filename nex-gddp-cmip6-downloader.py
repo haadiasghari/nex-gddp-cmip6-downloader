@@ -2,20 +2,21 @@
 # -*- coding: utf-8 -*-
 
 """
-NEX-GDDP-CMIP6 Downloader - GUI Edition (UX v1.1)
+NEX-GDDP-CMIP6 Downloader - GUI Edition (Version 1.0)
 
-Implements agreed UX roadmap:
-- Wizard-lite: single primary "Next Step" button + Step x/5
-- Build Queue in Download Queue header, disabled until ready + tooltip via info icon
-- Selection Summary (right side) always visible
-- Human-readable Status bar
-- Left Catalog panel fully scrollable (small screens / Windows scaling safe)
-- Log line limit + adaptive UI pump
-- Clean shutdown + close sessions
+Final Version with:
+- Enhanced UX with tabbed interface
+- Fixed toolbar with quick actions
+- Visual progress indicator
+- Search/filter for long lists
+- Grouped checkboxes for parameters
+- Improved download speed and ETA calculation
+- About section with author info
 
-Dependencies:
-- requests
-- tkinter (usually bundled)
+Author: Hadi Asghari
+Email: hadi.asghari@outlook.com
+Version: 1.0
+Description: A professional GUI tool for downloading NEX-GDDP-CMIP6 climate data from NASA servers
 """
 
 from __future__ import annotations
@@ -31,8 +32,9 @@ import requests
 import xml.etree.ElementTree as ET
 
 from urllib.parse import urljoin
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict, Tuple, Set, Callable
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -734,11 +736,11 @@ def download_file_robust(url: str, dest_dir: str,
 
 
 # ============================================================
-# UI HELPERS: Tooltip + ScrollableFrame
+# UI HELPERS: Tooltip + ScrollableFrame + SearchableListbox
 # ============================================================
 
 class ToolTip:
-    def __init__(self, widget: tk.Widget, text: str, delay_ms: int = 400):
+    def __init__(self, widget: tk.Widget, text: str = "", delay_ms: int = 400):
         self.widget = widget
         self.text = text
         self.delay_ms = delay_ms
@@ -792,7 +794,7 @@ class ToolTip:
 
 
 class ScrollableFrame(ttk.Frame):
-    """Canvas + inner frame: scrolls entire left panel content."""
+    """Canvas + inner frame: scrolls entire content."""
     def __init__(self, parent, *args, **kwargs):
         super().__init__(parent, *args, **kwargs)
 
@@ -839,18 +841,675 @@ class ScrollableFrame(ttk.Frame):
         self.canvas.unbind_all("<Button-5>")
 
 
+class SearchableListbox(ttk.Frame):
+    """Listbox with search functionality."""
+    def __init__(self, parent, title: str, multi_select: bool = True, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        
+        self.title = title
+        self.multi_select = multi_select
+        self.all_items = []
+        self.filtered_items = []
+        
+        # Create frame
+        frame = ttk.LabelFrame(self, text=title, padding=6)
+        frame.pack(fill="both", expand=True)
+        
+        # Search frame
+        search_frame = ttk.Frame(frame)
+        search_frame.pack(fill="x", pady=(0, 5))
+        
+        ttk.Label(search_frame, text="Search:").pack(side="left", padx=(0, 5))
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        self.clear_search_btn = ttk.Button(search_frame, text="Clear", width=8, command=self.clear_search)
+        self.clear_search_btn.pack(side="right")
+        
+        # Listbox frame
+        listbox_frame = ttk.Frame(frame)
+        listbox_frame.pack(fill="both", expand=True)
+        
+        # Listbox
+        self.lb = tk.Listbox(listbox_frame, selectmode="extended" if multi_select else "single", 
+                            exportselection=False)
+        self.lb.pack(side="left", fill="both", expand=True)
+        
+        # Scrollbar
+        sb = ttk.Scrollbar(listbox_frame, orient="vertical", command=self.lb.yview)
+        self.lb.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        
+        # Bind events
+        self.search_var.trace_add("write", self._on_search_changed)
+        
+        # Selection info
+        self.selection_info = tk.StringVar(value="0 items selected")
+        ttk.Label(frame, textvariable=self.selection_info).pack(anchor="w", pady=(5, 0))
+        
+    def set_items(self, items: List[str]):
+        self.all_items = sorted(items)
+        self.filtered_items = self.all_items.copy()
+        self._refresh_listbox()
+        
+    def _refresh_listbox(self):
+        self.lb.delete(0, "end")
+        for item in self.filtered_items:
+            self.lb.insert("end", item)
+        self._update_selection_info()
+        
+    def _on_search_changed(self, *args):
+        search_text = self.search_var.get().lower()
+        if not search_text:
+            self.filtered_items = self.all_items.copy()
+        else:
+            self.filtered_items = [item for item in self.all_items if search_text in item.lower()]
+        self._refresh_listbox()
+        
+    def clear_search(self):
+        self.search_var.set("")
+        
+    def get_selected(self) -> List[str]:
+        selected_indices = self.lb.curselection()
+        return [self.filtered_items[i] for i in selected_indices]
+    
+    def bind_selection_change(self, callback):
+        self.lb.bind("<<ListboxSelect>>", lambda e: self._on_selection_change(callback))
+        
+    def _on_selection_change(self, callback):
+        self._update_selection_info()
+        if callback:
+            callback()
+            
+    def _update_selection_info(self):
+        selected = len(self.lb.curselection())
+        total = len(self.filtered_items)
+        self.selection_info.set(f"{selected} of {total} items selected")
+        
+    def select_all(self):
+        self.lb.selection_set(0, "end")
+        self._update_selection_info()
+        
+    def clear_selection(self):
+        self.lb.selection_clear(0, "end")
+        self._update_selection_info()
+
+
+class CheckboxGroup(ttk.Frame):
+    """Group of checkboxes with select all/none buttons."""
+    def __init__(self, parent, title: str, items: List[str], on_change_callback: Optional[Callable] = None, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        
+        self.title = title
+        self.items = items
+        self.vars: Dict[str, tk.BooleanVar] = {}
+        self.on_change_callback = on_change_callback
+        
+        # Create frame
+        frame = ttk.LabelFrame(self, text=title, padding=10)
+        frame.pack(fill="both", expand=True)
+        
+        # Control buttons
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill="x", pady=(0, 10))
+        
+        ttk.Button(btn_frame, text="Select All", command=self.select_all).pack(side="left", padx=(0, 5))
+        ttk.Button(btn_frame, text="Select None", command=self.select_none).pack(side="left", padx=(0, 5))
+        
+        # Search
+        search_frame = ttk.Frame(frame)
+        search_frame.pack(fill="x", pady=(0, 10))
+        
+        ttk.Label(search_frame, text="Search:").pack(side="left", padx=(0, 5))
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        
+        ttk.Button(search_frame, text="Clear", command=self.clear_search).pack(side="right")
+        
+        # Checkboxes frame with scrollbar
+        checkboxes_frame = ttk.Frame(frame)
+        checkboxes_frame.pack(fill="both", expand=True)
+        
+        # Canvas for scrolling
+        self.canvas = tk.Canvas(checkboxes_frame, highlightthickness=0)
+        vsb = ttk.Scrollbar(checkboxes_frame, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vsb.set)
+        
+        vsb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        
+        self.inner_frame = ttk.Frame(self.canvas)
+        self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
+        
+        # Create checkboxes
+        self.checkbox_frames = []
+        self._create_checkboxes()
+        
+        # Configure canvas scrolling
+        self.inner_frame.bind("<Configure>", self._on_frame_configure)
+        
+        # Bind search
+        self.search_var.trace_add("write", self._on_search_changed)
+        
+    def _create_checkboxes(self):
+        # Clear existing checkboxes
+        for widget in self.inner_frame.winfo_children():
+            widget.destroy()
+        self.checkbox_frames = []
+        self.vars = {}
+        
+        # Create new checkboxes
+        for i, item in enumerate(self.items):
+            var = tk.BooleanVar(value=False)
+            self.vars[item] = var
+            
+            # FIX: Add trace to detect changes
+            var.trace_add("write", self._on_var_changed)
+            
+            cb_frame = ttk.Frame(self.inner_frame)
+            cb_frame.pack(fill="x", pady=2)
+            self.checkbox_frames.append((item, cb_frame))
+            
+            # FIX: Changed ttt.Checkbutton to ttk.Checkbutton
+            cb = ttk.Checkbutton(cb_frame, text=item, variable=var)
+            cb.pack(side="left", anchor="w")
+    
+    def _on_var_changed(self, *args):
+        """Called when any checkbox variable changes."""
+        if self.on_change_callback:
+            self.on_change_callback()
+            
+    def _on_frame_configure(self, event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        
+    def _on_search_changed(self, *args):
+        search_text = self.search_var.get().lower()
+        
+        for item, frame in self.checkbox_frames:
+            if not search_text or search_text in item.lower():
+                frame.pack(fill="x", pady=2)
+            else:
+                frame.pack_forget()
+                
+    def clear_search(self):
+        self.search_var.set("")
+        
+    def select_all(self):
+        for var in self.vars.values():
+            var.set(True)
+        # FIX: Trigger callback after selecting all
+        if self.on_change_callback:
+            self.on_change_callback()
+            
+    def select_none(self):
+        for var in self.vars.values():
+            var.set(False)
+        # FIX: Trigger callback after selecting none
+        if self.on_change_callback:
+            self.on_change_callback()
+            
+    def get_selected(self) -> List[str]:
+        return [item for item, var in self.vars.items() if var.get()]
+    
+    def set_items(self, items: List[str]):
+        self.items = sorted(items)
+        self._create_checkboxes()
+
+
 # ============================================================
-# GUI APP
+# ABOUT DIALOG (WITH SCROLLBAR ONLY FOR DESCRIPTION)
+# ============================================================
+
+class AboutDialog(tk.Toplevel):
+    """About dialog with author information and scrollable description."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("About NEX-GDDP-CMIP6 Downloader")
+        self.geometry("550x650")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        
+        # Center window
+        self.update_idletasks()
+        width = 550
+        height = 650
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f'{width}x{height}+{x}+{y}')
+        
+        self._create_widgets()
+        
+    def _create_widgets(self):
+        # Main container
+        main_frame = ttk.Frame(self, padding=20)
+        main_frame.pack(fill="both", expand=True)
+        
+        # Title
+        title_label = ttk.Label(main_frame, 
+                               text="NEX-GDDP-CMIP6 Downloader", 
+                               font=("Arial", 16, "bold"))
+        title_label.pack(pady=(0, 10))
+        
+        # Version
+        version_label = ttk.Label(main_frame, 
+                                 text="Version 1.0", 
+                                 font=("Arial", 12))
+        version_label.pack(pady=(0, 20))
+        
+        # Author Information Frame
+        info_frame = ttk.LabelFrame(main_frame, text="Author Information", padding=15)
+        info_frame.pack(fill="x", pady=(0, 15))
+        
+        # Create grid for author info
+        info_grid = ttk.Frame(info_frame)
+        info_grid.pack(fill="x", expand=True)
+        
+        # Row 0: Author
+        ttk.Label(info_grid, text="Author:", 
+                 font=("Arial", 10, "bold"), 
+                 width=12, anchor="w").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Label(info_grid, text="Hadi Asghari", 
+                 font=("Arial", 10)).grid(row=0, column=1, sticky="w", pady=5)
+        
+        # Row 1: Email
+        ttk.Label(info_grid, text="Email:", 
+                 font=("Arial", 10, "bold"), 
+                 width=12, anchor="w").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(info_grid, text="hadi.asghari@outlook.com", 
+                 font=("Arial", 10)).grid(row=1, column=1, sticky="w", pady=5)
+        
+        # Row 2: Version
+        ttk.Label(info_grid, text="Version:", 
+                 font=("Arial", 10, "bold"), 
+                 width=12, anchor="w").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(info_grid, text="1.0", 
+                 font=("Arial", 10)).grid(row=2, column=1, sticky="w", pady=5)
+        
+        # Row 3: Organization
+        ttk.Label(info_grid, text="Github:", 
+                 font=("Arial", 10, "bold"), 
+                 width=12, anchor="w").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Label(info_grid, text="github.com/haadiasghari", 
+                 font=("Arial", 10)).grid(row=3, column=1, sticky="w", pady=5)
+        
+        # Description Frame
+        desc_frame = ttk.LabelFrame(main_frame, text="Description", padding=10)
+        desc_frame.pack(fill="both", expand=True, pady=(0, 15))
+        
+        # Create text widget with scrollbar for description
+        text_container = ttk.Frame(desc_frame)
+        text_container.pack(fill="both", expand=True)
+        
+        # Text widget for description
+        desc_text = """NEX-GDDP-CMIP6 Downloader is a professional graphical user interface application 
+designed specifically for downloading climate projection data from NASA's NEX-GDDP-CMIP6 dataset.
+
+This tool simplifies the complex process of accessing and downloading climate data by providing:
+• A 5-step guided workflow for data selection
+• Multi-threaded downloads with pause/resume functionality
+• Real-time speed monitoring and progress tracking
+• Advanced queue management for batch downloads
+• Support for segmented downloads of large files
+• Automatic retry on connection failures
+• Comprehensive filtering and search capabilities
+
+DATASET INFORMATION:
+The NEX-GDDP-CMIP6 dataset contains downscaled climate projections derived from the CMIP6 archive. 
+It provides high-resolution (0.25 degree) daily data for multiple climate variables, 
+covering historical periods and future projections under various emission scenarios.
+
+APPLICATION FEATURES:
+1. MODEL SELECTION - Browse and select from available climate models
+2. SCENARIO SELECTION - Choose emission scenarios (SSP1-2.6, SSP2-4.5, SSP3-7.0, SSP5-8.5)
+3. ENSEMBLE SELECTION - Select model realizations (r1i1p1f1, etc.)
+4. PARAMETER SELECTION - Choose climate variables (tasmax, tasmin, pr, etc.)
+5. CONFIGURATION - Set download parameters and start downloading
+
+TECHNICAL DETAILS:
+• Data Source: NASA NEX-GDDP-CMIP6 THREDDS Catalog
+• Supported Formats: NetCDF (.nc)
+• Download Protocol: HTTP/HTTPS with range requests
+• Multi-threading: Configurable worker threads
+• Resume Capability: Partial download recovery
+• Progress Tracking: Real-time speed and ETA calculation
+
+SYSTEM REQUIREMENTS:
+• Operating System: Windows, macOS, Linux
+• Python Version: 3.7 or higher
+• Disk Space: Varies based on selected data
+• Internet Connection: Required for data download
+
+FOR MORE INFORMATION:
+Visit the official NASA NEX website: https://www.nasa.gov/nex
+Climate Data Tools: https://github.com/climatedatatools
+
+LICENSE AND USAGE:
+This tool is provided for research and educational purposes. Users should comply with NASA's 
+data usage policies and cite the appropriate data sources in their publications.
+
+SUPPORT AND FEEDBACK:
+For technical support or feature requests, please contact the author via email.
+
+Version History:
+• v1.0 - Initial release with basic functionality"""
+
+        # FIX: keep a reference on self so the mouse-wheel handlers can
+        # scroll this exact widget instead of relying on focus_get().
+        self.desc_text_widget = tk.Text(text_container, wrap="word",
+                                  font=("Arial", 9), 
+                                  bg="#f9f9f9",
+                                  relief="sunken",
+                                  height=15,
+                                  width=60)
+        self.desc_text_widget.insert("1.0", desc_text)
+        self.desc_text_widget.configure(state="disabled")
+        
+        # Add vertical scrollbar for text - اینجا اسکرول‌بار فقط برای متن توضیحات
+        text_scrollbar = ttk.Scrollbar(text_container, orient="vertical", command=self.desc_text_widget.yview)
+        self.desc_text_widget.configure(yscrollcommand=text_scrollbar.set)
+        
+        # Pack text and scrollbar
+        self.desc_text_widget.pack(side="left", fill="both", expand=True)
+        text_scrollbar.pack(side="right", fill="y")
+        
+        # Close button frame
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill="x", pady=(10, 0))
+        
+        # Close button
+        close_btn = ttk.Button(button_frame, text="Close", command=self.destroy, width=20)
+        close_btn.pack()
+        
+        # Bind keyboard shortcuts
+        self.bind('<Escape>', lambda e: self.destroy())
+        self.bind('<Return>', lambda e: self.destroy())
+        
+        # Enable mouse wheel scrolling for the text widget
+        self.desc_text_widget.bind("<MouseWheel>", self._on_mousewheel)
+        self.desc_text_widget.bind("<Button-4>", self._on_mousewheel_linux)
+        self.desc_text_widget.bind("<Button-5>", self._on_mousewheel_linux)
+        
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel scrolling for Windows/Mac."""
+        # FIX: scroll the description Text widget directly instead of
+        # self.focus_get(), which can return the Toplevel itself (no
+        # yview_scroll method) and caused the AttributeError.
+        self.desc_text_widget.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        
+    def _on_mousewheel_linux(self, event):
+        """Handle mouse wheel scrolling for Linux."""
+        # FIX: same as above - scroll the Text widget directly.
+        if event.num == 4:
+            self.desc_text_widget.yview_scroll(-1, "units")
+        elif event.num == 5:
+            self.desc_text_widget.yview_scroll(1, "units")
+
+# ============================================================
+# ADVANCED SPEED CALCULATOR (IMPROVED ETA)
+# ============================================================
+
+class SpeedCalculator:
+    """Calculates download speed and ETA with advanced algorithms."""
+    def __init__(self):
+        self.reset()
+        
+    def reset(self):
+        self.start_time = None
+        self.total_bytes = 0
+        self.file_bytes = 0
+        self.file_start_time = None
+        self.file_total_bytes = None  # NEW: Store total file size for current file
+        
+        # Speed calculation buffers
+        self.speed_samples = []
+        self.max_samples = 15
+        
+        # File history for ETA calculation
+        self.file_times = []  # List of download times for completed files
+        self.file_sizes = []  # List of sizes for completed files
+        
+        # ETA calculation
+        self.last_update_time = None
+        self.bytes_since_last_update = 0
+        
+    def start_download(self):
+        self.reset()
+        self.start_time = time.time()
+        self.last_update_time = time.time()
+        
+    def start_file(self, file_total_bytes: Optional[int] = None):
+        self.file_start_time = time.time()
+        self.file_bytes = 0
+        self.file_total_bytes = file_total_bytes  # Store file size for ETA
+        self.bytes_since_last_update = 0
+        
+    def set_file_total(self, total_bytes: Optional[int]):
+        """Set total size of current file for accurate ETA calculation."""
+        self.file_total_bytes = total_bytes
+        
+    def add_bytes(self, bytes_count: int):
+        self.total_bytes += bytes_count
+        self.file_bytes += bytes_count
+        self.bytes_since_last_update += bytes_count
+        
+    def get_current_speed(self) -> float:
+        """Get current speed in bytes per second using weighted average."""
+        current_time = time.time()
+        if not self.file_start_time or current_time - self.file_start_time < 0.1:
+            return 0.0
+            
+        # Calculate instantaneous speed based on recent bytes
+        elapsed_since_update = current_time - (self.last_update_time or current_time)
+        if elapsed_since_update > 0.1:  # Only update if significant time has passed
+            speed = self.bytes_since_last_update / elapsed_since_update
+            self.bytes_since_last_update = 0
+            self.last_update_time = current_time
+            
+            # Add to samples for smoothing
+            self.speed_samples.append(speed)
+            if len(self.speed_samples) > self.max_samples:
+                self.speed_samples.pop(0)
+            
+        # Calculate weighted average (recent samples have more weight)
+        if not self.speed_samples:
+            return 0.0
+            
+        weighted_sum = 0
+        total_weight = 0
+        for i, sample in enumerate(self.speed_samples):
+            weight = i + 1  # Linear weighting
+            weighted_sum += sample * weight
+            total_weight += weight
+            
+        return weighted_sum / total_weight if total_weight > 0 else 0.0
+    
+    def get_average_speed(self) -> float:
+        """Get average speed for entire download."""
+        if not self.start_time or time.time() - self.start_time < 0.1:
+            return 0.0
+            
+        elapsed = time.time() - self.start_time
+        if elapsed <= 0:
+            return 0.0
+            
+        return self.total_bytes / elapsed
+    
+    def record_file_completion(self, file_size: Optional[int] = None):
+        """Record completion time of a file for better ETA prediction."""
+        if self.file_start_time:
+            file_time = time.time() - self.file_start_time
+            self.file_times.append(file_time)
+            if file_size:
+                self.file_sizes.append(file_size)
+            
+            # Keep only last 10 files for prediction
+            if len(self.file_times) > 10:
+                self.file_times.pop(0)
+            if len(self.file_sizes) > 10:
+                self.file_sizes.pop(0)
+    
+    def get_eta(self, files_remaining: int, files_done: int) -> str:
+        """Calculate ETA using multiple methods for better accuracy."""
+        if not self.start_time or files_done == 0:
+            return "Calculating..."
+            
+        elapsed = time.time() - self.start_time
+        if elapsed <= 0:
+            return "Calculating..."
+        
+        # Method 1: Based on current file progress (most accurate for current file)
+        current_file_eta = self._get_current_file_eta()
+        
+        # Method 2: Based on average time per file
+        avg_time_eta = self._get_avg_time_eta(files_remaining, files_done)
+        
+        # Method 3: Based on speed and remaining bytes (if we know sizes)
+        speed_based_eta = self._get_speed_based_eta(files_remaining)
+        
+        # Combine methods: Prefer current file ETA if available, otherwise use average
+        if current_file_eta is not None and current_file_eta > 0:
+            # Add average time for remaining files
+            if files_remaining > 1 and avg_time_eta is not None:
+                total_eta = current_file_eta + (avg_time_eta * (files_remaining - 1))
+                return self._format_time_duration(total_eta)
+            else:
+                return self._format_time_duration(current_file_eta)
+        elif avg_time_eta is not None:
+            total_eta = avg_time_eta * files_remaining
+            return self._format_time_duration(total_eta)
+        elif speed_based_eta is not None:
+            return self._format_time_duration(speed_based_eta)
+        else:
+            return "Calculating..."
+    
+    def _get_current_file_eta(self) -> Optional[float]:
+        """Calculate ETA for current file based on progress."""
+        if not self.file_start_time or self.file_total_bytes is None or self.file_total_bytes <= 0:
+            return None
+            
+        bytes_remaining = self.file_total_bytes - self.file_bytes
+        if bytes_remaining <= 0:
+            return 0.0
+            
+        current_speed = self.get_current_speed()
+        if current_speed > 0:
+            return bytes_remaining / current_speed
+        
+        # Fallback to average speed
+        avg_speed = self.get_average_speed()
+        if avg_speed > 0:
+            return bytes_remaining / avg_speed
+            
+        return None
+    
+    def _get_avg_time_eta(self, files_remaining: int, files_done: int) -> Optional[float]:
+        """Calculate ETA based on average time per file with trend analysis."""
+        if not self.file_times:
+            return None
+            
+        # Calculate weighted average (recent files have more weight)
+        weighted_sum = 0
+        total_weight = 0
+        for i, file_time in enumerate(self.file_times):
+            weight = (i + 1) ** 1.5  # Exponential weighting
+            weighted_sum += file_time * weight
+            total_weight += weight
+            
+        avg_time = weighted_sum / total_weight if total_weight > 0 else 0
+        
+        # Adjust based on trend (if download is speeding up/slowing down)
+        if len(self.file_times) >= 3:
+            recent_avg = sum(self.file_times[-3:]) / 3
+            older_avg = sum(self.file_times[:-3]) / len(self.file_times[:-3]) if len(self.file_times) > 3 else recent_avg
+            trend_factor = recent_avg / older_avg if older_avg > 0 else 1.0
+            
+            # Apply trend factor (but limit to reasonable range)
+            trend_factor = max(0.5, min(2.0, trend_factor))
+            avg_time *= trend_factor
+            
+        return avg_time
+    
+    def _get_speed_based_eta(self, files_remaining: int) -> Optional[float]:
+        """Calculate ETA based on average speed and average file size."""
+        if not self.file_sizes:
+            return None
+            
+        avg_speed = self.get_average_speed()
+        if avg_speed <= 0:
+            return None
+            
+        avg_file_size = sum(self.file_sizes) / len(self.file_sizes)
+        if avg_file_size <= 0:
+            return None
+            
+        avg_time_per_file = avg_file_size / avg_speed
+        return avg_time_per_file * files_remaining
+    
+    def format_speed(self, speed_bps: float) -> str:
+        """Format speed in human readable format."""
+        if speed_bps >= 1024 * 1024:  # MB/s
+            return f"{speed_bps / (1024 * 1024):.2f} MB/s"
+        elif speed_bps >= 1024:  # KB/s
+            return f"{speed_bps / 1024:.2f} KB/s"
+        else:  # B/s
+            return f"{speed_bps:.0f} B/s"
+    
+    def format_elapsed(self) -> str:
+        """Format elapsed time since download started."""
+        if not self.start_time:
+            return "0s"
+            
+        elapsed = time.time() - self.start_time
+        return self._format_time_duration(elapsed)
+    
+    def _format_time_duration(self, seconds: float) -> str:
+        """Format seconds into human readable time duration."""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            minutes = int(seconds / 60)
+            seconds_remain = int(seconds % 60)
+            return f"{minutes}m {seconds_remain}s"
+        elif seconds < 86400:  # Less than a day
+            hours = int(seconds / 3600)
+            minutes = int((seconds % 3600) / 60)
+            return f"{hours}h {minutes}m"
+        else:
+            days = int(seconds / 86400)
+            hours = int((seconds % 86400) / 3600)
+            return f"{days}d {hours}h"
+    
+    def format_downloaded(self) -> str:
+        """Format total downloaded bytes."""
+        if self.total_bytes >= 1024 * 1024 * 1024:  # GB
+            return f"{self.total_bytes / (1024 * 1024 * 1024):.2f} GB"
+        elif self.total_bytes >= 1024 * 1024:  # MB
+            return f"{self.total_bytes / (1024 * 1024):.2f} MB"
+        elif self.total_bytes >= 1024:  # KB
+            return f"{self.total_bytes / 1024:.2f} KB"
+        else:
+            return f"{self.total_bytes} B"
+
+
+# ============================================================
+# GUI APP - FINAL VERSION 1.0 (IMPROVED ETA)
 # ============================================================
 
 class App(tk.Tk):
-    STAGES = ["models", "scenarios", "ensembles", "params", "queue"]  # 5 steps
-
     def __init__(self):
         super().__init__()
-        self.title("NEX-GDDP-CMIP6 Downloader")
-        self.geometry("1260x860")
-        self.minsize(1100, 700)
+        self.title("NEX-GDDP-CMIP6 Downloader v1.0")
+        self.geometry("1360x920")
+        self.minsize(1200, 750)
+        
+        # Set icon (if available)
+        try:
+            self.iconbitmap(default=r'C:\Work\ipnb\Project 2\Code\icons\app_icon.ico')
+        except Exception:
+            pass
 
         # UI queue (thread -> UI)
         self.uiq: "queue.Queue[dict]" = queue.Queue()
@@ -872,7 +1531,16 @@ class App(tk.Tk):
         self.is_paused = False
         self.closing = False
 
-        self.stage = "models"  # wizard stage
+        # Current tab
+        self.current_tab = 0
+        
+        # Download stats
+        self.speed_calc = SpeedCalculator()
+        self.total_files = 0
+        self.files_done = 0
+        self.download_start_time = None
+        self.last_speed_update = 0
+        self.current_file_total = None  # Store total size of current file
 
         # events init
         resume_event.set()
@@ -884,253 +1552,485 @@ class App(tk.Tk):
         self.after(60, self._pump_ui_queue)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        self._log("[INFO] Ready.")
-        self._set_status("Ready.")
-        self._refresh_selection_summary()
-        self._refresh_wizard()
+        self._log("[INFO] Welcome to NEX-GDDP-CMIP6 Downloader v1.0!")
+        self._set_status("Ready. Start by loading models from Step 1.")
+        self._update_progress_bar()
 
     # ---------------- UI layout ----------------
 
     def _build_ui(self):
-        root = ttk.Frame(self, padding=10)
-        root.pack(fill="both", expand=True)
+        # Create menu bar
+        self._create_menu_bar()
+        
+        # Main container
+        main_container = ttk.Frame(self, padding=5)
+        main_container.pack(fill="both", expand=True)
 
-        # Settings
-        settings = ttk.LabelFrame(root, text="Settings", padding=10)
-        settings.pack(fill="x")
+        # ========== TOOLBAR (FIXED) ==========
+        toolbar = ttk.Frame(main_container)
+        toolbar.pack(fill="x", pady=(0, 10))
+        
+        # Quick actions in toolbar
+        ttk.Label(toolbar, text="Quick Actions:", font=("", 10, "bold")).pack(side="left", padx=(0, 10))
+        
+        self.btn_load_models = ttk.Button(toolbar, text="Load Models", command=self.load_models)
+        self.btn_load_models.pack(side="left", padx=5)
+        ToolTip(self.btn_load_models, "Fetch available climate models from NASA servers")
+        
+        self.btn_load_scen = ttk.Button(toolbar, text="Load Scenarios", command=self.load_scenarios)
+        self.btn_load_scen.pack(side="left", padx=5)
+        ToolTip(self.btn_load_scen, "Load scenarios for selected model")
+        
+        self.btn_load_ens = ttk.Button(toolbar, text="Load Ensembles", command=self.load_ensembles)
+        self.btn_load_ens.pack(side="left", padx=5)
+        ToolTip(self.btn_load_ens, "Load ensembles for selected scenario")
+        
+        self.btn_load_params = ttk.Button(toolbar, text="Load Parameters", command=self.load_parameters)
+        self.btn_load_params.pack(side="left", padx=5)
+        ToolTip(self.btn_load_params, "Load parameters for selected ensembles")
+        
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", padx=15, fill="y")
+        
+        self.btn_build_queue = ttk.Button(toolbar, text="Build Queue", command=self.build_queue)
+        self.btn_build_queue.pack(side="left", padx=5)
+        ToolTip(self.btn_build_queue, "Build download queue from current selections")
+        
+        self.btn_clear_queue = ttk.Button(toolbar, text="Clear Queue", command=self.clear_queue)
+        self.btn_clear_queue.pack(side="left", padx=5)
+        ToolTip(self.btn_clear_queue, "Clear the download queue")
 
+        # ========== PROGRESS BAR ==========
+        progress_frame = ttk.Frame(main_container)
+        progress_frame.pack(fill="x", pady=(0, 10))
+        
+        self.progress_labels = [
+            "1. Select Model",
+            "2. Select Scenario", 
+            "3. Select Ensembles",
+            "4. Select Parameters",
+            "5. Configure & Download"
+        ]
+        
+        self.progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", 
+                                           mode="determinate", maximum=100)
+        self.progress_bar.pack(fill="x", pady=(5, 0))
+        
+        labels_frame = ttk.Frame(progress_frame)
+        labels_frame.pack(fill="x")
+        
+        for i, label in enumerate(self.progress_labels):
+            lbl = ttk.Label(labels_frame, text=label, font=("", 9))
+            lbl.pack(side="left", padx=20, expand=True)
+            if i < len(self.progress_labels) - 1:
+                ttk.Label(labels_frame, text="→", font=("", 9)).pack(side="left", padx=5)
+
+        # ========== NOTEBOOK (TABBED INTERFACE) ==========
+        notebook_frame = ttk.Frame(main_container)
+        notebook_frame.pack(fill="both", expand=True, pady=(0, 10))
+        
+        self.notebook = ttk.Notebook(notebook_frame)
+        self.notebook.pack(fill="both", expand=True)
+        
+        # Create tabs
+        self.tab1 = self._create_tab1()
+        self.tab2 = self._create_tab2()
+        self.tab3 = self._create_tab3()
+        self.tab4 = self._create_tab4()
+        self.tab5 = self._create_tab5()
+        
+        self.notebook.add(self.tab1, text="Step 1: Select Model")
+        self.notebook.add(self.tab2, text="Step 2: Select Scenario")
+        self.notebook.add(self.tab3, text="Step 3: Select Ensembles")
+        self.notebook.add(self.tab4, text="Step 4: Select Parameters")
+        self.notebook.add(self.tab5, text="Step 5: Configure & Download")
+        
+        # Disable tabs initially
+        for i in range(1, 5):
+            self.notebook.tab(i, state="disabled")
+
+        # ========== NAVIGATION BUTTONS ==========
+        nav_frame = ttk.Frame(main_container)
+        nav_frame.pack(fill="x", pady=(0, 10))
+        
+        self.btn_prev = ttk.Button(nav_frame, text="← Previous", command=self.prev_tab, state="disabled")
+        self.btn_prev.pack(side="left", padx=5)
+        
+        self.btn_next = ttk.Button(nav_frame, text="Next →", command=self.next_tab)
+        self.btn_next.pack(side="right", padx=5)
+        
+        ttk.Label(nav_frame, text="Use Previous/Next buttons or click tabs directly").pack(side="left", padx=20)
+
+        # ========== STATUS AND LOG ==========
+        # Status bar
+        self.status_var = tk.StringVar(value="Ready. Start by loading models from Step 1.")
+        status_bar = ttk.Label(main_container, textvariable=self.status_var, 
+                              relief="sunken", anchor="w", padding=(10, 5))
+        status_bar.pack(fill="x", pady=(0, 5))
+        
+        # Log frame
+        log_frame = ttk.LabelFrame(main_container, text="Activity Log", padding=10)
+        log_frame.pack(fill="both", expand=False)
+        
+        self.log_text = tk.Text(log_frame, height=8, wrap="word")
+        self.log_text.pack(side="left", fill="both", expand=True)
+        
+        log_sb = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=log_sb.set)
+        log_sb.pack(side="right", fill="y")
+
+    def _create_menu_bar(self):
+        """Create menu bar with Help and About."""
+        menubar = tk.Menu(self)
+        self.config(menu=menubar)
+        
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="About", command=self.show_about)
+        help_menu.add_separator()
+        help_menu.add_command(label="Documentation", command=self.show_documentation)
+        help_menu.add_command(label="Keyboard Shortcuts", command=self.show_shortcuts)
+
+    def _create_tab1(self):
+        """Tab 1: Select Model"""
+        tab = ttk.Frame(self.notebook, padding=15)
+        
+        # Instructions
+        instr = ttk.LabelFrame(tab, text="Instructions", padding=10)
+        instr.pack(fill="x", pady=(0, 15))
+        
+        ttk.Label(instr, text="1. Click 'Load Models' to fetch available climate models from NASA servers\n"
+                             "2. Select one model from the list\n"
+                             "3. Click 'Next' to proceed to Scenario selection",
+                 justify="left").pack(anchor="w")
+        
+        # Model selection frame
+        model_frame = ttk.LabelFrame(tab, text="Available Models", padding=10)
+        model_frame.pack(fill="both", expand=True)
+        
+        # Searchable listbox for models
+        self.models_listbox = SearchableListbox(model_frame, "Models", multi_select=False)
+        self.models_listbox.pack(fill="both", expand=True)
+        
+        # Bind selection change
+        self.models_listbox.bind_selection_change(self._on_model_selected)
+        
+        # Load button inside tab
+        btn_frame = ttk.Frame(model_frame)
+        btn_frame.pack(fill="x", pady=(10, 0))
+        
+        ttk.Button(btn_frame, text="Load Models", command=self.load_models).pack(side="left")
+        
+        return tab
+
+    def _create_tab2(self):
+        """Tab 2: Select Scenario"""
+        tab = ttk.Frame(self.notebook, padding=15)
+        
+        # Instructions
+        instr = ttk.LabelFrame(tab, text="Instructions", padding=10)
+        instr.pack(fill="x", pady=(0, 15))
+        
+        ttk.Label(instr, text="1. A model must be selected from Step 1\n"
+                             "2. Click 'Load Scenarios' to fetch scenarios for the selected model\n"
+                             "3. Select one scenario from the list\n"
+                             "4. Click 'Next' to proceed to Ensemble selection",
+                 justify="left").pack(anchor="w")
+        
+        # Current model info
+        self.current_model_var = tk.StringVar(value="Selected Model: None")
+        model_info = ttk.Label(tab, textvariable=self.current_model_var, font=("", 10, "bold"))
+        model_info.pack(anchor="w", pady=(0, 10))
+        
+        # Scenario selection frame
+        scenario_frame = ttk.LabelFrame(tab, text="Available Scenarios", padding=10)
+        scenario_frame.pack(fill="both", expand=True)
+        
+        # Searchable listbox for scenarios
+        self.scenarios_listbox = SearchableListbox(scenario_frame, "Scenarios", multi_select=False)
+        self.scenarios_listbox.pack(fill="both", expand=True)
+        
+        # Bind selection change
+        self.scenarios_listbox.bind_selection_change(self._on_scenario_selected)
+        
+        # Load button
+        btn_frame = ttk.Frame(scenario_frame)
+        btn_frame.pack(fill="x", pady=(10, 0))
+        
+        ttk.Button(btn_frame, text="Load Scenarios", command=self.load_scenarios).pack(side="left")
+        
+        return tab
+
+    def _create_tab3(self):
+        """Tab 3: Select Ensembles"""
+        tab = ttk.Frame(self.notebook, padding=15)
+        
+        # Instructions
+        instr = ttk.LabelFrame(tab, text="Instructions", padding=10)
+        instr.pack(fill="x", pady=(0, 15))
+        
+        ttk.Label(instr, text="1. A model and scenario must be selected from previous steps\n"
+                             "2. Click 'Load Ensembles' to fetch ensembles for the selected scenario\n"
+                             "3. Select one or more ensembles from the list\n"
+                             "4. Click 'Next' to proceed to Parameter selection",
+                 justify="left").pack(anchor="w")
+        
+        # Current selection info
+        info_frame = ttk.Frame(tab)
+        info_frame.pack(fill="x", pady=(0, 10))
+        
+        self.current_model_var2 = tk.StringVar(value="Model: None")
+        self.current_scenario_var = tk.StringVar(value="Scenario: None")
+        
+        ttk.Label(info_frame, textvariable=self.current_model_var2, font=("", 9)).pack(side="left", padx=(0, 20))
+        ttk.Label(info_frame, textvariable=self.current_scenario_var, font=("", 9)).pack(side="left")
+        
+        # Ensemble selection frame
+        ensemble_frame = ttk.LabelFrame(tab, text="Available Ensembles", padding=10)
+        ensemble_frame.pack(fill="both", expand=True)
+        
+        # Searchable listbox for ensembles
+        self.ensembles_listbox = SearchableListbox(ensemble_frame, "Ensembles", multi_select=True)
+        self.ensembles_listbox.pack(fill="both", expand=True)
+        
+        # Selection control buttons
+        btn_frame = ttk.Frame(ensemble_frame)
+        btn_frame.pack(fill="x", pady=(10, 0))
+        
+        ttk.Button(btn_frame, text="Select All", command=self.ensembles_listbox.select_all).pack(side="left", padx=(0, 5))
+        ttk.Button(btn_frame, text="Clear Selection", command=self.ensembles_listbox.clear_selection).pack(side="left", padx=(0, 20))
+        
+        ttk.Button(btn_frame, text="Load Ensembles", command=self.load_ensembles).pack(side="left")
+        
+        # Bind selection change
+        self.ensembles_listbox.bind_selection_change(self._on_ensemble_selected)
+        
+        return tab
+
+    def _create_tab4(self):
+        """Tab 4: Select Parameters"""
+        tab = ttk.Frame(self.notebook, padding=15)
+        
+        # Instructions
+        instr = ttk.LabelFrame(tab, text="Instructions", padding=10)
+        instr.pack(fill="x", pady=(0, 15))
+        
+        ttk.Label(instr, text="1. A model, scenario, and at least one ensemble must be selected\n"
+                             "2. Click 'Load Parameters' to fetch parameters for selected ensembles\n"
+                             "3. Select one or more parameters from the list\n"
+                             "4. Choose whether to show only common parameters\n"
+                             "5. Click 'Next' to proceed to Configuration",
+                 justify="left").pack(anchor="w")
+        
+        # Current selection info
+        info_frame = ttk.Frame(tab)
+        info_frame.pack(fill="x", pady=(0, 10))
+        
+        self.current_model_var3 = tk.StringVar(value="Model: None")
+        self.current_scenario_var2 = tk.StringVar(value="Scenario: None")
+        self.current_ensembles_var = tk.StringVar(value="Ensembles: 0 selected")
+        
+        ttk.Label(info_frame, textvariable=self.current_model_var3, font=("", 9)).pack(side="left", padx=(0, 15))
+        ttk.Label(info_frame, textvariable=self.current_scenario_var2, font=("", 9)).pack(side="left", padx=(0, 15))
+        ttk.Label(info_frame, textvariable=self.current_ensembles_var, font=("", 9)).pack(side="left")
+        
+        # Parameter selection frame
+        param_frame = ttk.LabelFrame(tab, text="Available Parameters", padding=10)
+        param_frame.pack(fill="both", expand=True)
+        
+        # Checkbox group for parameters (better for multi-select)
+        self.params_checkbox = CheckboxGroup(param_frame, "Parameters", [], 
+                                             on_change_callback=self._update_navigation_buttons)
+        self.params_checkbox.pack(fill="both", expand=True)
+        
+        # Options frame
+        options_frame = ttk.Frame(param_frame)
+        options_frame.pack(fill="x", pady=(10, 0))
+        
+        self.common_params_only_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(options_frame, text="Show only common parameters across selected ensembles",
+                       variable=self.common_params_only_var).pack(side="left", padx=(0, 20))
+        
+        # Load button
+        ttk.Button(options_frame, text="Load Parameters", command=self.load_parameters).pack(side="left")
+        
+        return tab
+
+    def _create_tab5(self):
+        """Tab 5: Configure & Download"""
+        tab = ttk.Frame(self.notebook, padding=15)
+        
+        # Left panel: Configuration
+        config_frame = ttk.LabelFrame(tab, text="Download Configuration", padding=10)
+        config_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        
+        # Output directory
+        ttk.Label(config_frame, text="Output Directory:").grid(row=0, column=0, sticky="w", pady=(0, 5))
         self.out_dir_var = tk.StringVar(value=os.path.abspath("cmip6_downloads"))
-        self.version_filter_var = tk.StringVar(value=DEFAULT_VERSION_FILTER)
-        self.workers_var = tk.IntVar(value=DEFAULT_WORKERS)
-        self.segments_var = tk.IntVar(value=DEFAULT_SEGMENTS)
+        out_dir_entry = ttk.Entry(config_frame, textvariable=self.out_dir_var, width=50)
+        out_dir_entry.grid(row=0, column=1, sticky="we", pady=(0, 5), padx=(5, 5))
+        ttk.Button(config_frame, text="Browse...", command=self.browse_dir, width=10).grid(row=0, column=2, pady=(0, 5))
+        
+        # Year range
+        ttk.Label(config_frame, text="Year Range:").grid(row=1, column=0, sticky="w", pady=5)
+        
+        year_frame = ttk.Frame(config_frame)
+        year_frame.grid(row=1, column=1, columnspan=2, sticky="w", pady=5, padx=5)
+        
         self.y0_var = tk.StringVar(value="1950")
         self.y1_var = tk.StringVar(value="2100")
-        self.common_params_only_var = tk.BooleanVar(value=True)
+        
+        ttk.Entry(year_frame, textvariable=self.y0_var, width=8).pack(side="left")
+        ttk.Label(year_frame, text=" to ").pack(side="left", padx=2)
+        ttk.Entry(year_frame, textvariable=self.y1_var, width=8).pack(side="left")
+        ttk.Label(year_frame, text=" (inclusive)").pack(side="left", padx=(5, 0))
+        
+        # Version filter
+        ttk.Label(config_frame, text="Version Filter:").grid(row=2, column=0, sticky="w", pady=5)
+        self.version_filter_var = tk.StringVar(value=DEFAULT_VERSION_FILTER)
+        ttk.Entry(config_frame, textvariable=self.version_filter_var, width=30).grid(row=2, column=1, sticky="w", pady=5, padx=5)
+        
+        # Download settings
+        ttk.Label(config_frame, text="Download Workers:").grid(row=3, column=0, sticky="w", pady=5)
+        self.workers_var = tk.IntVar(value=DEFAULT_WORKERS)
+        ttk.Spinbox(config_frame, from_=1, to=16, textvariable=self.workers_var, width=8).grid(row=3, column=1, sticky="w", pady=5, padx=5)
+        
+        ttk.Label(config_frame, text="Segments per File:").grid(row=4, column=0, sticky="w", pady=5)
+        self.segments_var = tk.IntVar(value=DEFAULT_SEGMENTS)
+        ttk.Spinbox(config_frame, from_=1, to=16, textvariable=self.segments_var, width=8).grid(row=4, column=1, sticky="w", pady=5, padx=5)
+        
+        # Auto-advance option
         self.auto_advance_var = tk.BooleanVar(value=False)
-
-        ttk.Label(settings, text="Output dir:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(settings, textvariable=self.out_dir_var, width=70).grid(row=0, column=1, sticky="we", padx=(6, 6))
-        ttk.Button(settings, text="Browse...", command=self.browse_dir).grid(row=0, column=2, sticky="e")
-
-        ttk.Label(settings, text="Version filter:").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(settings, textvariable=self.version_filter_var, width=24).grid(row=1, column=1, sticky="w", pady=(8, 0), padx=(6, 0))
-
-        ttk.Label(settings, text="Workers:").grid(row=1, column=1, sticky="e", pady=(8, 0), padx=(0, 190))
-        ttk.Spinbox(settings, from_=1, to=32, textvariable=self.workers_var, width=5).grid(row=1, column=1, sticky="e", pady=(8, 0), padx=(0, 135))
-
-        ttk.Label(settings, text="Segments:").grid(row=1, column=1, sticky="e", pady=(8, 0), padx=(0, 70))
-        ttk.Spinbox(settings, from_=1, to=32, textvariable=self.segments_var, width=5).grid(row=1, column=1, sticky="e", pady=(8, 0), padx=(0, 15))
-
-        yrs = ttk.Frame(settings)
-        yrs.grid(row=1, column=2, sticky="e", pady=(8, 0))
-        ttk.Label(yrs, text="Years:").pack(side="left")
-        ttk.Entry(yrs, textvariable=self.y0_var, width=6).pack(side="left", padx=(6, 4))
-        ttk.Label(yrs, text="to").pack(side="left")
-        ttk.Entry(yrs, textvariable=self.y1_var, width=6).pack(side="left", padx=(4, 0))
-
-        ttk.Checkbutton(
-            settings,
-            text="Only common parameters across selected ensembles",
-            variable=self.common_params_only_var,
-            command=self._on_settings_changed,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
-
-        ttk.Checkbutton(
-            settings,
-            text="Auto advance steps (Wizard)",
-            variable=self.auto_advance_var
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
-
-        settings.columnconfigure(1, weight=1)
-
-        # Middle: paned
-        mid = ttk.PanedWindow(root, orient="horizontal")
-        mid.pack(fill="both", expand=True, pady=(10, 10))
-
-        # Left: scrollable catalog selection
-        left_container = ttk.Frame(mid)
-        mid.add(left_container, weight=0)
-
-        left_scroll = ScrollableFrame(left_container)
-        left_scroll.pack(fill="both", expand=True)
-
-        sel = ttk.LabelFrame(left_scroll.inner, text="Catalog Selection", padding=10)
-        sel.pack(fill="both", expand=True)
-
-        # Wizard block
-        wiz = ttk.LabelFrame(sel, text="Wizard", padding=10)
-        wiz.pack(fill="x", pady=(0, 10))
-
-        top = ttk.Frame(wiz)
-        top.pack(fill="x")
-
-        self.wiz_step_var = tk.StringVar(value="Step 1/5")
-        self.wiz_label_var = tk.StringVar(value="Load Models")
-
-        ttk.Label(top, textvariable=self.wiz_step_var).pack(side="left")
-        ttk.Label(top, text="•").pack(side="left", padx=6)
-        ttk.Label(top, textvariable=self.wiz_label_var).pack(side="left")
-
-        btns = ttk.Frame(wiz)
-        btns.pack(fill="x", pady=(8, 0))
-
-        self.btn_wizard = ttk.Button(btns, text="Load Models", command=self.on_wizard_next)
-        self.btn_wizard.pack(side="left")
-
-        self.lbl_wizard_info = ttk.Label(btns, text="ⓘ")
-        self.lbl_wizard_info.pack(side="left", padx=8)
-        self.tt_wizard = ToolTip(self.lbl_wizard_info, "Wizard guidance.")
-
-        # Power-user buttons (still available)
-        adv = ttk.LabelFrame(sel, text="Quick Actions (Power users)", padding=10)
-        adv.pack(fill="x", pady=(0, 10))
-
-        row = ttk.Frame(adv)
-        row.pack(fill="x")
-        self.btn_load_models = ttk.Button(row, text="Load Models", command=self.load_models)
-        self.btn_load_scen = ttk.Button(row, text="Load Scenarios", command=self.load_scenarios)
-        self.btn_load_ens = ttk.Button(row, text="Load Ensembles", command=self.load_ensembles)
-        self.btn_load_params = ttk.Button(row, text="Load Parameters", command=self.load_parameters)
-        self.btn_load_models.pack(side="left")
-        self.btn_load_scen.pack(side="left", padx=6)
-        self.btn_load_ens.pack(side="left", padx=6)
-        self.btn_load_params.pack(side="left", padx=6)
-
-        # Lists
-        self.lb_models = self._make_listbox(sel, "Models (select one)")
-        self.lb_scenarios = self._make_listbox(sel, "Scenarios (select one)")
-        self.lb_ensembles = self._make_listbox(sel, "Ensembles (multi-select)")
-        self.lb_params = self._make_listbox(sel, "Parameters (multi-select)")
-
-        # Right side
-        right = ttk.Frame(mid)
-        mid.add(right, weight=1)
-
-        # Selection summary (UX-gold)
-        summ = ttk.LabelFrame(right, text="Selection Summary", padding=10)
-        summ.pack(fill="x")
-
-        self.sum_model = tk.StringVar(value="Model: -")
-        self.sum_scen = tk.StringVar(value="Scenario: -")
-        self.sum_ens = tk.StringVar(value="Ensembles: 0 selected")
-        self.sum_params = tk.StringVar(value="Parameters: 0 selected")
-        self.sum_years = tk.StringVar(value="Years: -")
-        self.sum_out = tk.StringVar(value="Output: -")
-        self.sum_vf = tk.StringVar(value="Version filter: -")
-
-        grid = ttk.Frame(summ)
-        grid.pack(fill="x")
-        ttk.Label(grid, textvariable=self.sum_model).grid(row=0, column=0, sticky="w")
-        ttk.Label(grid, textvariable=self.sum_scen).grid(row=0, column=1, sticky="w", padx=(18, 0))
-        ttk.Label(grid, textvariable=self.sum_ens).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(grid, textvariable=self.sum_params).grid(row=1, column=1, sticky="w", padx=(18, 0), pady=(4, 0))
-        ttk.Label(grid, textvariable=self.sum_years).grid(row=2, column=0, sticky="w", pady=(4, 0))
-        ttk.Label(grid, textvariable=self.sum_vf).grid(row=2, column=1, sticky="w", padx=(18, 0), pady=(4, 0))
-        ttk.Label(grid, textvariable=self.sum_out).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        grid.columnconfigure(0, weight=1)
-        grid.columnconfigure(1, weight=1)
-
-        # Download Queue
-        qframe = ttk.LabelFrame(right, text="Download Queue", padding=10)
-        qframe.pack(fill="both", expand=True, pady=(10, 0))
-
-        header = ttk.Frame(qframe)
-        header.pack(fill="x")
-
-        self.btn_build_queue = ttk.Button(header, text="Build Queue", command=self.build_queue)
-        self.btn_clear_queue = ttk.Button(header, text="Clear Queue", command=self.clear_queue)
+        ttk.Checkbutton(config_frame, text="Enable auto-advance between steps",
+                       variable=self.auto_advance_var).grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 5))
+        
+        config_frame.columnconfigure(1, weight=1)
+        
+        # Right panel: Queue and Download
+        queue_frame = ttk.LabelFrame(tab, text="Download Queue & Statistics", padding=10)
+        queue_frame.pack(side="right", fill="both", expand=True)
+        
+        # Queue info
         self.queue_info_var = tk.StringVar(value="Queue: 0 files")
-
-        self.btn_build_queue.pack(side="left")
-        self.btn_clear_queue.pack(side="left", padx=6)
-        ttk.Label(header, textvariable=self.queue_info_var).pack(side="left", padx=(12, 0))
-
-        self.lbl_bq_info = ttk.Label(header, text="ⓘ")
-        self.lbl_bq_info.pack(side="left", padx=8)
-        self.tt_bq = ToolTip(self.lbl_bq_info, "")
-
+        ttk.Label(queue_frame, textvariable=self.queue_info_var, font=("", 10, "bold")).pack(anchor="w", pady=(0, 10))
+        
+        # Queue treeview
         columns = ("year", "filename", "out_dir")
-        self.tree = ttk.Treeview(qframe, columns=columns, show="headings", height=12)
+        self.tree = ttk.Treeview(queue_frame, columns=columns, show="headings", height=10)
         self.tree.heading("year", text="Year(s)")
         self.tree.heading("filename", text="Filename")
         self.tree.heading("out_dir", text="Output folder")
         self.tree.column("year", width=90, anchor="w")
-        self.tree.column("filename", width=380, anchor="w")
-        self.tree.column("out_dir", width=520, anchor="w")
-        self.tree.pack(fill="both", expand=True, pady=(8, 6))
-
-        tsb = ttk.Scrollbar(qframe, orient="vertical", command=self.tree.yview)
+        self.tree.column("filename", width=250, anchor="w")
+        self.tree.column("out_dir", width=300, anchor="w")
+        self.tree.pack(fill="both", expand=True, pady=(0, 10))
+        
+        tsb = ttk.Scrollbar(queue_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tsb.set)
         tsb.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
-
+        
         # Download controls
-        dctrl = ttk.Frame(qframe)
-        dctrl.pack(fill="x", pady=(4, 0))
-
-        self.btn_start = ttk.Button(dctrl, text="Start", command=self.start_download)
-        self.btn_pause = ttk.Button(dctrl, text="Pause", command=self.pause_download, state="disabled")
-        self.btn_resume = ttk.Button(dctrl, text="Resume", command=self.resume_download, state="disabled")
-        self.btn_stop = ttk.Button(dctrl, text="Stop", command=self.stop_download, state="disabled")
-
-        self.btn_start.pack(side="left")
-        self.btn_pause.pack(side="left", padx=6)
-        self.btn_resume.pack(side="left", padx=6)
-        self.btn_stop.pack(side="left", padx=6)
-
-        # Progress
-        pframe = ttk.LabelFrame(right, text="Progress", padding=10)
-        pframe.pack(fill="x", pady=(10, 0))
-
+        dl_frame = ttk.Frame(queue_frame)
+        dl_frame.pack(fill="x", pady=(0, 10))
+        
+        self.btn_start = ttk.Button(dl_frame, text="Start Download", command=self.start_download)
+        self.btn_pause = ttk.Button(dl_frame, text="Pause", command=self.pause_download, state="disabled")
+        self.btn_resume = ttk.Button(dl_frame, text="Resume", command=self.resume_download, state="disabled")
+        self.btn_stop = ttk.Button(dl_frame, text="Stop", command=self.stop_download, state="disabled")
+        
+        self.btn_start.pack(side="left", padx=(0, 5))
+        self.btn_pause.pack(side="left", padx=5)
+        self.btn_resume.pack(side="left", padx=5)
+        self.btn_stop.pack(side="left", padx=5)
+        
+        # ========== DOWNLOAD STATISTICS ==========
+        stats_frame = ttk.LabelFrame(queue_frame, text="Download Statistics", padding=10)
+        stats_frame.pack(fill="x", pady=(0, 10))
+        
+        # Current file info
         self.cur_file_var = tk.StringVar(value="Current file: -")
+        ttk.Label(stats_frame, textvariable=self.cur_file_var, font=("", 9)).pack(anchor="w")
+        
+        # Progress bars
         self.overall_var = tk.StringVar(value="Overall: 0/0")
-
-        ttk.Label(pframe, textvariable=self.cur_file_var).pack(anchor="w")
-        ttk.Label(pframe, textvariable=self.overall_var).pack(anchor="w", pady=(2, 0))
-
-        self.pb_file = ttk.Progressbar(pframe, orient="horizontal", mode="determinate")
+        ttk.Label(stats_frame, textvariable=self.overall_var, font=("", 9)).pack(anchor="w", pady=(5, 0))
+        
+        self.pb_file = ttk.Progressbar(stats_frame, orient="horizontal", mode="determinate")
         self.pb_file.pack(fill="x", pady=(6, 4))
-        self.pb_overall = ttk.Progressbar(pframe, orient="horizontal", mode="determinate")
-        self.pb_overall.pack(fill="x")
-
-        # Log
-        lframe = ttk.LabelFrame(root, text="Log", padding=10)
-        lframe.pack(fill="both", expand=False, pady=(10, 0))
-
-        self.log_text = tk.Text(lframe, height=10, wrap="word")
-        self.log_text.pack(side="left", fill="both", expand=True)
-
-        lsb = ttk.Scrollbar(lframe, orient="vertical", command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=lsb.set)
-        lsb.pack(side="right", fill="y")
-
-        # Status bar (human)
-        self.status_var = tk.StringVar(value="Ready.")
-        status = ttk.Label(root, textvariable=self.status_var, relief="sunken", anchor="w", padding=(8, 4))
-        status.pack(fill="x", pady=(8, 0))
-
-    def _make_listbox(self, parent, title: str) -> tk.Listbox:
-        frame = ttk.LabelFrame(parent, text=title, padding=6)
-        frame.pack(fill="both", expand=True, pady=(0, 8))
-        lb = tk.Listbox(frame, selectmode="extended", exportselection=False)
-        lb.pack(side="left", fill="both", expand=True)
-        sb = ttk.Scrollbar(frame, orient="vertical", command=lb.yview)
-        lb.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        return lb
+        
+        self.pb_overall = ttk.Progressbar(stats_frame, orient="horizontal", mode="determinate")
+        self.pb_overall.pack(fill="x", pady=(0, 10))
+        
+        # Speed and ETA info (IMPROVED ETA)
+        speed_frame = ttk.Frame(stats_frame)
+        speed_frame.pack(fill="x", pady=(5, 0))
+        
+        # Left column
+        left_col = ttk.Frame(speed_frame)
+        left_col.pack(side="left", fill="x", expand=True)
+        
+        self.speed_var = tk.StringVar(value="Speed: -")
+        self.avg_speed_var = tk.StringVar(value="Avg Speed: -")
+        self.downloaded_var = tk.StringVar(value="Downloaded: -")
+        
+        ttk.Label(left_col, textvariable=self.speed_var, font=("", 9)).pack(anchor="w")
+        ttk.Label(left_col, textvariable=self.avg_speed_var, font=("", 9)).pack(anchor="w", pady=(2, 0))
+        ttk.Label(left_col, textvariable=self.downloaded_var, font=("", 9)).pack(anchor="w", pady=(2, 0))
+        
+        # Right column
+        right_col = ttk.Frame(speed_frame)
+        right_col.pack(side="right", fill="x", expand=True)
+        
+        self.eta_var = tk.StringVar(value="ETA: -")
+        self.elapsed_var = tk.StringVar(value="Elapsed: -")
+        self.remaining_files_var = tk.StringVar(value="Remaining: -")
+        
+        ttk.Label(right_col, textvariable=self.eta_var, font=("", 9)).pack(anchor="e")
+        ttk.Label(right_col, textvariable=self.elapsed_var, font=("", 9)).pack(anchor="e", pady=(2, 0))
+        ttk.Label(right_col, textvariable=self.remaining_files_var, font=("", 9)).pack(anchor="e", pady=(2, 0))
+        
+        return tab
 
     def _bind_events(self):
-        # Double click shortcuts
-        self.lb_models.bind("<Double-Button-1>", lambda _e: self.load_scenarios())
-        self.lb_scenarios.bind("<Double-Button-1>", lambda _e: self.load_ensembles())
-        self.lb_ensembles.bind("<Double-Button-1>", lambda _e: self.load_parameters())
-
-        # Selection change updates summary and wizard readiness
-        for lb in (self.lb_models, self.lb_scenarios, self.lb_ensembles, self.lb_params):
-            lb.bind("<<ListboxSelect>>", lambda _e: self._on_selection_changed())
-
-        # Year/filter/out changes update summary + readiness
+        # Notebook tab change
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        
+        # Year/filter/out changes
         for var in (self.y0_var, self.y1_var, self.version_filter_var, self.out_dir_var):
             var.trace_add("write", lambda *_: self._on_settings_changed())
+
+    # ---------------- Menu Actions ----------------
+
+    def show_about(self):
+        """Show about dialog."""
+        AboutDialog(self)
+    
+    def show_documentation(self):
+        """Show documentation."""
+        messagebox.showinfo("Documentation", 
+                          "NEX-GDDP-CMIP6 Downloader Documentation\n\n"
+                          "This tool downloads climate projection data from NASA servers.\n"
+                          "Follow the 5-step process:\n"
+                          "1. Select a climate model\n"
+                          "2. Choose a scenario\n"
+                          "3. Select one or more ensembles\n"
+                          "4. Choose parameters to download\n"
+                          "5. Configure settings and start download\n\n"
+                          "For more information, visit the NASA NEX-GDDP website.")
+    
+    def show_shortcuts(self):
+        """Show keyboard shortcuts."""
+        messagebox.showinfo("Keyboard Shortcuts",
+                          "Keyboard Shortcuts:\n\n"
+                          "Ctrl+N: New session\n"
+                          "Ctrl+O: Open settings\n"
+                          "Ctrl+S: Save configuration\n"
+                          "Ctrl+Q: Quit application\n"
+                          "F1: Help\n"
+                          "F5: Refresh current list\n"
+                          "Tab: Next field\n"
+                          "Shift+Tab: Previous field\n"
+                          "Esc: Close dialogs")
 
     # ---------------- Status / Log ----------------
 
@@ -1158,7 +2058,7 @@ class App(tk.Tk):
     def post_log(self, msg: str):
         self.post_ui({"type": "log", "msg": msg})
 
-    # ---------------- UI queue pump (adaptive) ----------------
+    # ---------------- UI queue pump ----------------
 
     def _pump_ui_queue(self):
         try:
@@ -1174,51 +2074,46 @@ class App(tk.Tk):
 
                 elif et == "models_loaded":
                     self.models = ev["models"]
-                    self._set_listbox(self.lb_models, [m["title"] for m in self.models])
+                    model_titles = [m["title"] for m in self.models]
+                    self.models_listbox.set_items(model_titles)
                     self._set_status(f"Models loaded ({len(self.models)}).")
                     self._log(f"[INFO] Loaded models: {len(self.models)}")
-                    if self.auto_advance_var.get() and self.models:
-                        self.lb_models.selection_clear(0, "end")
-                        self.lb_models.selection_set(0)
-                        self.lb_models.see(0)
-                        self._on_selection_changed()
-                        self.load_scenarios()
+                    
+                    # Auto-select first if auto-advance enabled
+                    if self.auto_advance_var.get() and model_titles:
+                        self._select_first_item(self.models_listbox)
 
                 elif et == "scenarios_loaded":
                     self.scenarios = ev["scenarios"]
-                    self._set_listbox(self.lb_scenarios, [s["title"] for s in self.scenarios])
+                    scenario_titles = [s["title"] for s in self.scenarios]
+                    self.scenarios_listbox.set_items(scenario_titles)
                     self._set_status(f"Scenarios loaded ({len(self.scenarios)}).")
                     self._log(f"[INFO] Loaded scenarios: {len(self.scenarios)}")
-                    if self.auto_advance_var.get() and self.scenarios:
-                        self.lb_scenarios.selection_clear(0, "end")
-                        self.lb_scenarios.selection_set(0)
-                        self.lb_scenarios.see(0)
-                        self._on_selection_changed()
-                        self.load_ensembles()
+                    
+                    if self.auto_advance_var.get() and scenario_titles:
+                        self._select_first_item(self.scenarios_listbox)
 
                 elif et == "ensembles_loaded":
                     self.ensembles = ev["ensembles"]
-                    self._set_listbox(self.lb_ensembles, [e["title"] for e in self.ensembles])
+                    ensemble_titles = [e["title"] for e in self.ensembles]
+                    self.ensembles_listbox.set_items(ensemble_titles)
                     self._set_status(f"Ensembles loaded ({len(self.ensembles)}).")
                     self._log(f"[INFO] Loaded ensembles: {len(self.ensembles)}")
-                    if self.auto_advance_var.get() and self.ensembles:
-                        self.lb_ensembles.selection_clear(0, "end")
-                        self.lb_ensembles.selection_set(0)
-                        self.lb_ensembles.see(0)
-                        self._on_selection_changed()
-                        self.load_parameters()
+                    
+                    if self.auto_advance_var.get() and ensemble_titles:
+                        self.ensembles_listbox.select_all()
 
                 elif et == "params_loaded":
                     self.params_by_ens = ev["params_by_ens"]
                     self.param_titles = ev["param_titles"]
-                    self._set_listbox(self.lb_params, self.param_titles)
+                    self.params_checkbox.set_items(self.param_titles)
                     self._set_status(f"Parameters loaded ({len(self.param_titles)}).")
                     self._log(f"[INFO] Loaded parameters: {len(self.param_titles)}")
+                    
                     if self.auto_advance_var.get() and self.param_titles:
-                        self.lb_params.selection_clear(0, "end")
-                        self.lb_params.selection_set(0)
-                        self.lb_params.see(0)
-                        self._on_selection_changed()
+                        self.params_checkbox.select_all()
+                    # Update navigation buttons after loading parameters
+                    self._update_navigation_buttons()
 
                 elif et == "queue_built":
                     self.download_items = ev["items"]
@@ -1233,6 +2128,10 @@ class App(tk.Tk):
 
                 elif et == "dl_progress_total":
                     total = ev["total"]
+                    self.current_file_total = total
+                    # Pass file total to speed calculator for better ETA
+                    self.speed_calc.set_file_total(total)
+                    
                     if total is None:
                         self.pb_file.configure(mode="indeterminate")
                         self.pb_file.start(10)
@@ -1247,15 +2146,37 @@ class App(tk.Tk):
                 elif et == "dl_progress_add":
                     if self.pb_file["mode"] == "determinate":
                         self.pb_file["value"] = float(self.pb_file["value"]) + ev["delta"]
+                    # Update speed calculator
+                    self.speed_calc.add_bytes(ev["delta"])
+                    
+                    # Update speed display more frequently during active download
+                    current_time = time.time()
+                    if current_time - self.last_speed_update > 0.5:  # Update every 0.5 seconds
+                        self._update_speed_display()
+                        self.last_speed_update = current_time
 
                 elif et == "dl_file_start":
                     self.cur_file_var.set(f"Current file: {ev['filename']}")
                     self.overall_var.set(f"Overall: {ev['index']}/{ev['total_files']}")
                     self.pb_overall.configure(mode="determinate", maximum=ev["total_files"], value=ev["index"] - 1)
                     self._set_status(f"Downloading {ev['index']}/{ev['total_files']} …")
+                    
+                    # Start new file in speed calculator
+                    self.speed_calc.start_file(self.current_file_total)
+                    self.files_done = ev["index"] - 1
+                    self.total_files = ev["total_files"]
+                    self._update_speed_display()
 
                 elif et == "dl_file_done":
                     self.pb_overall["value"] = ev["index"]
+                    self.files_done = ev["index"]
+                    # Record file completion for better ETA prediction
+                    self.speed_calc.record_file_completion(self.current_file_total)
+                    # Force update of speed display when file finishes
+                    self._update_speed_display()
+                    # Record elapsed time for the finished file
+                    elapsed = self.speed_calc.format_elapsed()
+                    self._log(f"[INFO] File {ev['index']}/{self.total_files} completed. Elapsed: {elapsed}")
 
                 elif et == "dl_restart_progress":
                     self.pb_file.stop()
@@ -1263,220 +2184,201 @@ class App(tk.Tk):
 
                 elif et == "done":
                     self._log(ev["msg"])
-                    self._set_status("Done.")
+                    self._set_status("Download completed.")
                     self._apply_dl_state({"running": False, "paused": False})
+                    
+                    # Final update of speed display
+                    self._update_speed_display()
+                    
+                    # Show final statistics
+                    total_elapsed = self.speed_calc.format_elapsed()
+                    total_downloaded = self.speed_calc.format_downloaded()
+                    self._log(f"[INFO] Download completed in {total_elapsed}")
+                    self._log(f"[INFO] Total downloaded: {total_downloaded}")
 
         except queue.Empty:
             pass
 
+        # Update speed display periodically even when no events (for elapsed time)
+        current_time = time.time()
+        if self.is_downloading and current_time - self.last_speed_update > 1.0:
+            self._update_speed_display()
+            self.last_speed_update = current_time
+
         interval = 50 if (self.is_downloading and not self.is_paused) else (90 if self.is_downloading else 140)
         self.after(interval, self._pump_ui_queue)
 
-    def _set_listbox(self, lb: tk.Listbox, items: List[str]):
-        lb.delete(0, "end")
-        for it in items:
-            lb.insert("end", it)
+    def _select_first_item(self, listbox_widget):
+        """Select first item in a SearchableListbox."""
+        if hasattr(listbox_widget, 'lb'):
+            listbox_widget.lb.selection_clear(0, "end")
+            if listbox_widget.lb.size() > 0:
+                listbox_widget.lb.selection_set(0)
+                listbox_widget.lb.see(0)
+                listbox_widget._update_selection_info()
 
-    # ---------------- Selection / Settings updates ----------------
+    # ---------------- Speed Display (IMPROVED ETA) ----------------
 
-    def _on_selection_changed(self):
-        self._refresh_selection_summary()
-        self._recompute_stage()
-        self._refresh_wizard()
-        self._refresh_build_queue_enabled()
+    def _update_speed_display(self):
+        """Update speed and ETA display with improved ETA calculation."""
+        if not self.is_downloading:
+            return
+            
+        # Update speed
+        current_speed = self.speed_calc.get_current_speed()
+        avg_speed = self.speed_calc.get_average_speed()
+        
+        self.speed_var.set(f"Speed: {self.speed_calc.format_speed(current_speed)}")
+        self.avg_speed_var.set(f"Avg Speed: {self.speed_calc.format_speed(avg_speed)}")
+        self.downloaded_var.set(f"Downloaded: {self.speed_calc.format_downloaded()}")
+        
+        # Update ETA and remaining files
+        files_remaining = self.total_files - self.files_done
+        self.remaining_files_var.set(f"Remaining: {files_remaining} files")
+        
+        # Calculate ETA using improved algorithm
+        if self.total_files > 0:
+            eta = self.speed_calc.get_eta(files_remaining, self.files_done)
+            self.eta_var.set(f"ETA: {eta}")
+        else:
+            self.eta_var.set("ETA: -")
+            
+        # Update elapsed time
+        elapsed = self.speed_calc.format_elapsed()
+        self.elapsed_var.set(f"Elapsed: {elapsed}")
+
+    # ---------------- Tab Navigation ----------------
+
+    def _on_tab_changed(self, event=None):
+        self.current_tab = self.notebook.index(self.notebook.select())
+        self._update_navigation_buttons()
+        self._update_progress_bar()
+        
+        # Update info displays
+        self._update_selection_info()
+
+    def _update_navigation_buttons(self):
+        """Update state of Previous/Next buttons based on current tab."""
+        # Previous button
+        if self.current_tab == 0:
+            self.btn_prev.configure(state="disabled")
+        else:
+            self.btn_prev.configure(state="normal")
+        
+        # Next button
+        if self.current_tab == 4:  # Last tab
+            self.btn_next.configure(state="disabled")
+        else:
+            # Check if we can proceed to next tab
+            can_proceed = self._can_proceed_to_next()
+            self.btn_next.configure(state="normal" if can_proceed else "disabled")
+
+    def _can_proceed_to_next(self) -> bool:
+        """Check if user can proceed to next tab."""
+        if self.current_tab == 0:  # Model selection
+            return bool(self.models_listbox.get_selected())
+        elif self.current_tab == 1:  # Scenario selection
+            return bool(self.scenarios_listbox.get_selected())
+        elif self.current_tab == 2:  # Ensemble selection
+            return len(self.ensembles_listbox.get_selected()) > 0
+        elif self.current_tab == 3:  # Parameter selection
+            # Check if at least one parameter is selected
+            return len(self.params_checkbox.get_selected()) > 0
+        return True
+
+    def prev_tab(self):
+        if self.current_tab > 0:
+            self.notebook.select(self.current_tab - 1)
+
+    def next_tab(self):
+        if self.current_tab < 4 and self._can_proceed_to_next():
+            # Enable next tab
+            self.notebook.tab(self.current_tab + 1, state="normal")
+            self.notebook.select(self.current_tab + 1)
+
+    def _update_progress_bar(self):
+        """Update the progress bar based on current tab."""
+        progress = ((self.current_tab + 1) / 5) * 100
+        self.progress_bar["value"] = progress
+
+    # ---------------- Selection Updates ----------------
+
+    def _on_model_selected(self):
+        selected = self.models_listbox.get_selected()
+        if selected:
+            model_name = selected[0]
+            self.current_model_var.set(f"Selected Model: {model_name}")
+            self.current_model_var2.set(f"Model: {model_name}")
+            self.current_model_var3.set(f"Model: {model_name}")
+            
+            # Enable next tab if not already enabled
+            self.notebook.tab(1, state="normal")
+        
+        self._update_navigation_buttons()
+
+    def _on_scenario_selected(self):
+        selected = self.scenarios_listbox.get_selected()
+        if selected:
+            scenario_name = selected[0]
+            self.current_scenario_var.set(f"Scenario: {scenario_name}")
+            self.current_scenario_var2.set(f"Scenario: {scenario_name}")
+            
+            # Enable next tab if not already enabled
+            self.notebook.tab(2, state="normal")
+        
+        self._update_navigation_buttons()
+
+    def _on_ensemble_selected(self):
+        selected = self.ensembles_listbox.get_selected()
+        count = len(selected)
+        self.current_ensembles_var.set(f"Ensembles: {count} selected")
+        
+        if count > 0:
+            # Enable next tab if not already enabled
+            self.notebook.tab(3, state="normal")
+        
+        self._update_navigation_buttons()
 
     def _on_settings_changed(self, *_):
-        self._refresh_selection_summary()
-        self._refresh_wizard()
-        self._refresh_build_queue_enabled()
-
-    def _refresh_selection_summary(self):
-        model = self._selected_one(self.lb_models)
-        scen = self._selected_one(self.lb_scenarios)
-        ens = self._selected_multi(self.lb_ensembles)
-        params = self._selected_multi(self.lb_params)
-
-        self.sum_model.set(f"Model: {model or '-'}")
-        self.sum_scen.set(f"Scenario: {scen or '-'}")
-        self.sum_ens.set(f"Ensembles: {len(ens)} selected")
-        self.sum_params.set(f"Parameters: {len(params)} selected")
-
-        ytxt = "-"
-        try:
-            y0 = int(self.y0_var.get().strip())
-            y1 = int(self.y1_var.get().strip())
-            ytxt = f"{y0}–{y1}" if y0 <= y1 else "Invalid"
-        except Exception:
-            ytxt = "Invalid"
-        self.sum_years.set(f"Years: {ytxt}")
-
-        vf = self.version_filter_var.get().strip()
-        self.sum_vf.set(f"Version filter: {vf if vf else '(none)'}")
-
-        outd = self.out_dir_var.get().strip()
-        self.sum_out.set(f"Output: {outd if outd else '-'}")
-
-    # ---------------- Wizard logic ----------------
-
-    def _recompute_stage(self):
-        """Compute current stage based on what is loaded/selected."""
-        if not self.models:
-            self.stage = "models"
-            return
-
-        model_sel = self._selected_one(self.lb_models)
-        if not model_sel:
-            self.stage = "models"
-            return
-
-        if not self.scenarios:
-            self.stage = "scenarios"
-            return
-
-        scen_sel = self._selected_one(self.lb_scenarios)
-        if not scen_sel:
-            self.stage = "scenarios"
-            return
-
-        if not self.ensembles:
-            self.stage = "ensembles"
-            return
-
-        ens_sel = self._selected_multi(self.lb_ensembles)
-        if not ens_sel:
-            self.stage = "ensembles"
-            return
-
-        if not self.param_titles:
-            self.stage = "params"
-            return
-
-        params_sel = self._selected_multi(self.lb_params)
-        if not params_sel:
-            self.stage = "params"
-            return
-
-        self.stage = "queue"
-
-    def _wizard_step_index(self) -> int:
-        return self.STAGES.index(self.stage) + 1
-
-    def _wizard_label(self) -> str:
-        return {
-            "models": "Load Models",
-            "scenarios": "Load Scenarios",
-            "ensembles": "Load Ensembles",
-            "params": "Load Parameters",
-            "queue": "Build Queue",
-        }[self.stage]
-
-    def _wizard_can_run(self) -> Tuple[bool, str]:
-        """Whether wizard next action is currently valid."""
-        if self._catalog_busy():
-            return False, "Catalog operation is running…"
-        if self.is_downloading:
-            return False, "Downloading in progress…"
-
-        if self.stage == "models":
-            return True, "Fetch top-level models list."
-        if self.stage == "scenarios":
-            if not self._selected_one(self.lb_models):
-                return False, "Select a model first."
-            return True, "Load scenarios for selected model."
-        if self.stage == "ensembles":
-            if not self._selected_one(self.lb_scenarios):
-                return False, "Select a scenario first."
-            return True, "Load ensembles for selected scenario."
-        if self.stage == "params":
-            if len(self._selected_multi(self.lb_ensembles)) == 0:
-                return False, "Select one or more ensembles first."
-            return True, "Load parameters (intersection/union) for selected ensembles."
-        if self.stage == "queue":
-            ok, why = self._can_build_queue()
-            return ok, why
-        return False, "Not ready."
-
-    def _refresh_wizard(self):
-        idx = self._wizard_step_index()
-        self.wiz_step_var.set(f"Step {idx}/5")
-        label = self._wizard_label()
-        self.wiz_label_var.set(label)
-        self.btn_wizard.configure(text=label)
-
-        ok, hint = self._wizard_can_run()
-        self.btn_wizard.configure(state="normal" if ok else "disabled")
-        self.tt_wizard.set_text(hint)
-
-    def on_wizard_next(self):
-        # This button is disabled when not ok; still guard:
-        ok, hint = self._wizard_can_run()
-        if not ok:
-            self._set_status(hint)
-            return
-
-        if self.stage == "models":
-            self.load_models()
-        elif self.stage == "scenarios":
-            self.load_scenarios()
-        elif self.stage == "ensembles":
-            self.load_ensembles()
-        elif self.stage == "params":
-            self.load_parameters()
-        elif self.stage == "queue":
-            self.build_queue()
-
-    # ---------------- Build Queue readiness ----------------
-
-    def _can_build_queue(self) -> Tuple[bool, str]:
-        if self._catalog_busy():
-            return False, "Busy: catalog is working."
-        if self.is_downloading:
-            return False, "Busy: downloading."
-
-        out_dir = self.out_dir_var.get().strip()
-        if not out_dir:
-            return False, "Set Output directory."
+        # Validate year range
         try:
             y0 = int(self.y0_var.get().strip())
             y1 = int(self.y1_var.get().strip())
             if y0 > y1:
-                return False, "Invalid years range."
-        except Exception:
-            return False, "Invalid years input."
+                self._set_status("Warning: Start year must be <= end year")
+        except ValueError:
+            self._set_status("Warning: Invalid year format")
 
-        if not self._selected_one(self.lb_models):
-            return False, "Select Model."
-        if not self._selected_one(self.lb_scenarios):
-            return False, "Select Scenario."
-        if len(self._selected_multi(self.lb_ensembles)) == 0:
-            return False, "Select one or more Ensembles."
-        if len(self._selected_multi(self.lb_params)) == 0:
-            return False, "Select one or more Parameters."
+    def _update_selection_info(self):
+        """Update all selection info displays."""
+        # Update current model info
+        selected_model = self.models_listbox.get_selected()
+        if selected_model:
+            model_name = selected_model[0]
+            self.current_model_var.set(f"Selected Model: {model_name}")
+            self.current_model_var2.set(f"Model: {model_name}")
+            self.current_model_var3.set(f"Model: {model_name}")
+        
+        # Update current scenario info
+        selected_scenario = self.scenarios_listbox.get_selected()
+        if selected_scenario:
+            scenario_name = selected_scenario[0]
+            self.current_scenario_var.set(f"Scenario: {scenario_name}")
+            self.current_scenario_var2.set(f"Scenario: {scenario_name}")
+        
+        # Update current ensemble info
+        selected_ensembles = self.ensembles_listbox.get_selected()
+        count = len(selected_ensembles)
+        self.current_ensembles_var.set(f"Ensembles: {count} selected")
 
-        return True, "Build download queue from current selections."
+    # ---------------- Convenience helpers ----------------
 
-    def _refresh_build_queue_enabled(self):
-        ok, why = self._can_build_queue()
-        self.btn_build_queue.configure(state="normal" if ok else "disabled")
-        # tooltip via info icon (works even when button disabled)
-        if ok:
-            self.tt_bq.set_text("Ready: click Build Queue.")
-        else:
-            self.tt_bq.set_text(f"Not ready: {why}")
-        # status hint (human)
-        if not ok and self.stage == "queue":
-            self._set_status(f"Build Queue: {why}")
+    def _selected_one(self, listbox_widget) -> Optional[str]:
+        selected = listbox_widget.get_selected()
+        return selected[0] if selected else None
 
-    # ---------------- Convenience selection helpers ----------------
-
-    def _selected_one(self, lb: tk.Listbox) -> Optional[str]:
-        sel = lb.curselection()
-        if not sel:
-            return None
-        return lb.get(sel[0])
-
-    def _selected_multi(self, lb: tk.Listbox) -> List[str]:
-        return [lb.get(i) for i in lb.curselection()]
+    def _selected_multi(self, listbox_widget) -> List[str]:
+        return listbox_widget.get_selected()
 
     def _find_entry_by_title(self, entries: List[Dict[str, Optional[str]]], title: str) -> Optional[Dict[str, Optional[str]]]:
         for e in entries:
@@ -1512,16 +2414,16 @@ class App(tk.Tk):
         self.catalog_thread.start()
 
     def load_scenarios(self):
-        if not self.models:
-            messagebox.showwarning("No models", "Load models first.")
-            return
-        model_title = self._selected_one(self.lb_models)
+        model_title = self._selected_one(self.models_listbox)
         if not model_title:
             messagebox.showwarning("Select model", "Select a model first.")
             return
+            
         model = self._find_entry_by_title(self.models, model_title)
         if not model:
+            messagebox.showerror("Error", "Selected model not found in cache.")
             return
+            
         if self._catalog_busy():
             messagebox.showinfo("Busy", "Catalog operation already running.")
             return
@@ -1537,16 +2439,16 @@ class App(tk.Tk):
         self.catalog_thread.start()
 
     def load_ensembles(self):
-        if not self.scenarios:
-            messagebox.showwarning("No scenarios", "Load scenarios first.")
-            return
-        scen_title = self._selected_one(self.lb_scenarios)
+        scen_title = self._selected_one(self.scenarios_listbox)
         if not scen_title:
             messagebox.showwarning("Select scenario", "Select a scenario first.")
             return
+            
         scen = self._find_entry_by_title(self.scenarios, scen_title)
         if not scen:
+            messagebox.showerror("Error", "Selected scenario not found in cache.")
             return
+            
         if self._catalog_busy():
             messagebox.showinfo("Busy", "Catalog operation already running.")
             return
@@ -1562,10 +2464,7 @@ class App(tk.Tk):
         self.catalog_thread.start()
 
     def load_parameters(self):
-        if not self.ensembles:
-            messagebox.showwarning("No ensembles", "Load ensembles first.")
-            return
-        ens_titles = self._selected_multi(self.lb_ensembles)
+        ens_titles = self._selected_multi(self.ensembles_listbox)
         if not ens_titles:
             messagebox.showwarning("Select ensembles", "Select one or more ensembles.")
             return
@@ -1577,6 +2476,7 @@ class App(tk.Tk):
                 selected_ens_entries.append(e)
 
         if not selected_ens_entries:
+            messagebox.showerror("Error", "Selected ensembles not found in cache.")
             return
 
         if self._catalog_busy():
@@ -1629,20 +2529,33 @@ class App(tk.Tk):
         self._set_status("Queue cleared.")
 
     def build_queue(self):
-        ok, why = self._can_build_queue()
-        if not ok:
-            self._set_status(f"Build Queue: {why}")
-            messagebox.showwarning("Not ready", why)
+        # Get selections
+        model_name = self._selected_one(self.models_listbox) or ""
+        scen_name = self._selected_one(self.scenarios_listbox) or ""
+        ens_titles = self._selected_multi(self.ensembles_listbox)
+        param_titles = self.params_checkbox.get_selected()
+
+        # Validate inputs
+        if not model_name or not scen_name or not ens_titles or not param_titles:
+            messagebox.showwarning("Incomplete Selection", 
+                                "Please complete all selection steps (1-4) before building queue.")
             return
 
         out_dir = self.out_dir_var.get().strip()
-        model_name = self._selected_one(self.lb_models) or ""
-        scen_name = self._selected_one(self.lb_scenarios) or ""
-        ens_titles = self._selected_multi(self.lb_ensembles)
-        param_titles = self._selected_multi(self.lb_params)
+        if not out_dir:
+            messagebox.showwarning("Output Directory", "Please specify an output directory.")
+            return
 
-        y0 = int(self.y0_var.get().strip())
-        y1 = int(self.y1_var.get().strip())
+        try:
+            y0 = int(self.y0_var.get().strip())
+            y1 = int(self.y1_var.get().strip())
+            if y0 > y1:
+                messagebox.showwarning("Invalid Years", "Start year must be <= end year.")
+                return
+        except ValueError:
+            messagebox.showwarning("Invalid Years", "Please enter valid year numbers.")
+            return
+
         version_filter = self.version_filter_var.get().strip()
 
         if self._catalog_busy():
@@ -1733,12 +2646,9 @@ class App(tk.Tk):
 
         # disable catalog actions while downloading
         cat_state = "disabled" if running else "normal"
-        for w in (self.btn_load_models, self.btn_load_scen, self.btn_load_ens, self.btn_load_params, self.btn_wizard):
+        for w in (self.btn_load_models, self.btn_load_scen, self.btn_load_ens, 
+                 self.btn_load_params, self.btn_build_queue, self.btn_clear_queue):
             w.configure(state=cat_state)
-
-        # Build Queue depends on readiness + not downloading
-        self._refresh_build_queue_enabled()
-        self._refresh_wizard()
 
     def start_download(self):
         if not self.download_items:
@@ -1764,6 +2674,21 @@ class App(tk.Tk):
 
         stop_event.clear()
         resume_event.set()
+
+        # Initialize speed calculator
+        self.speed_calc.start_download()
+        self.download_start_time = time.time()
+        self.last_speed_update = time.time()
+        self.total_files = len(self.download_items)
+        self.files_done = 0
+        
+        # Reset speed display
+        self.speed_var.set("Speed: Calculating...")
+        self.avg_speed_var.set("Avg Speed: Calculating...")
+        self.eta_var.set("ETA: Calculating...")
+        self.downloaded_var.set("Downloaded: 0 B")
+        self.elapsed_var.set("Elapsed: 0s")
+        self.remaining_files_var.set(f"Remaining: {self.total_files} files")
 
         self.post_ui({"type": "dl_state", "running": True, "paused": False})
         self.pb_overall.configure(mode="determinate", maximum=len(self.download_items), value=0)
@@ -1852,7 +2777,7 @@ class App(tk.Tk):
             for w in (
                 self.btn_start, self.btn_pause, self.btn_resume, self.btn_stop,
                 self.btn_load_models, self.btn_load_scen, self.btn_load_ens, self.btn_load_params,
-                self.btn_build_queue, self.btn_clear_queue, self.btn_wizard
+                self.btn_build_queue, self.btn_clear_queue, self.btn_prev, self.btn_next
             ):
                 w.configure(state="disabled")
         except Exception:
