@@ -151,13 +151,5 @@ Feel free to open an issue or submit a pull request.
 
 ## 📝 Changelog
 
-### v1.1
-- Enhanced tabbed interface
-- Fixed toolbar with quick actions
-- Improved ETA calculation algorithm
-- Visual step-by-step progress indicator
-- Search/filter for long lists
-- Grouped checkboxes for parameters
-
 ### v1.0
 - Initial release with basic download functionality
