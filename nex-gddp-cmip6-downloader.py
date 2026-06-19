@@ -1183,8 +1183,8 @@ SYSTEM REQUIREMENTS:
 • Internet Connection: Required for data download
 
 FOR MORE INFORMATION:
-Visit the official NASA NEX website: https://www.nasa.gov/nex
-Climate Data Tools: https://github.com/climatedatatools
+Visit the official NASA NEX website: https://www.nccs.nasa.gov/data-collections/nex-gddp-cmip6/
+Climate Data Tools: https://github.com/haadiasghari/nex-gddp-cmip6-downloader
 
 LICENSE AND USAGE:
 This tool is provided for research and educational purposes. Users should comply with NASA's 
